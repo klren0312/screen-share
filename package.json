@@ -1,0 +1,15 @@
+{
+  "name": "screen-share",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm --prefix src install && npm --prefix src/signaling install",
+    "dev:web": "npm --prefix src run dev",
+    "dev:signaling": "npm --prefix src/signaling run dev",
+    "dev": "concurrently -n web,signal -c blue,green \"npm:dev:web\" \"npm:dev:signaling\"",
+    "android": "echo \"用 Android Studio 打开 src/mobile 进行构建/运行\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

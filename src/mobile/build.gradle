@@ -1,0 +1,24 @@
+buildscript {
+    ext {
+        kotlin_version = '1.9.24'
+        agp_version = '8.5.2'
+    }
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:$agp_version"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        // org.webrtc:google-webrtc 只发布在已关闭的 JCenter，需用其镜像才能解析
+        maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+}

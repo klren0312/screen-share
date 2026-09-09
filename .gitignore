@@ -1,0 +1,22 @@
+# Node / Next.js
+node_modules/
+/.next/
+/out/
+*.tsbuildinfo
+next-env.d.ts
+
+# 信令服务
+src/signaling/node_modules/
+
+# Android
+*.iml
+.gradle/
+local.properties
+src/mobile/app/build/
+src/mobile/build/
+captures/
+.externalNativeBuild/
+
+# 环境
+.env
+.env.local
