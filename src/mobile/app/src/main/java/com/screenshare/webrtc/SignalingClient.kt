@@ -24,7 +24,7 @@ class SignalingClient(
     override var onRemoteDescription: ((SessionDescription) -> Unit)? = null
     override var onRemoteCandidate: ((IceCandidate) -> Unit)? = null
 
-    fun connect() {
+    override fun connect() {
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, this)
     }
@@ -88,7 +88,7 @@ class SignalingClient(
         }
     }
 
-    fun sendSignal(description: SessionDescription) {
+    override fun sendSignal(description: SessionDescription) {
         val d =
             JSONObject().apply {
                 put("type", description.type.canonicalForm())
@@ -98,7 +98,7 @@ class SignalingClient(
         send(envelope("signal", data))
     }
 
-    fun sendSignal(candidate: IceCandidate) {
+    override fun sendSignal(candidate: IceCandidate) {
         val c =
             JSONObject().apply {
                 put("candidate", candidate.sdp)
@@ -158,7 +158,7 @@ class SignalingClient(
         reason: String,
     ) {}
 
-    fun close() {
+    override fun close() {
         ws?.close(1000, "bye")
     }
 }

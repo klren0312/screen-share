@@ -5,8 +5,9 @@ import android.content.Intent
 import android.media.projection.MediaProjection
 import org.webrtc.*
 
-// 封装 WebRTC PeerConnection：采集屏幕视频、建立传感器 DataChannel，
+// 封装 WebRTC PeerConnection：仅负责屏幕视频采集与传输，
 // 并采用 "Perfect Negotiation" 模式处理 SDP/ICE 交换。
+// 说明：sensor 姿态不再走 WebRTC DataChannel，统一经 SignalingTransport 通道发送。
 class PeerConnectionClient(
     private val context: Context,
     private val factory: PeerConnectionFactory,
@@ -185,7 +186,6 @@ class PeerConnectionClient(
         capturer?.stopCapture()
         capturer?.dispose()
         videoSource?.dispose()
-        sensorChannel?.dispose()
         pc?.close()
         surfaceTextureHelper?.dispose()
     }
