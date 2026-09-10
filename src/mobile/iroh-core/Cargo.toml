@@ -11,8 +11,13 @@ crate-type = ["cdylib"]
 [dependencies]
 # JNI 绑定（与 Kotlin 侧 IrohCore.kt 对应）
 jni = "0.21"
-# iroh 点对点网络栈（含 discovery + relay，自动 NAT 穿透）
-iroh = "1"
+# iroh 点对点网络栈（含 discovery + relay，自动 NAT 穿透）。
+# 必须锁定为 1.1.0：与 Node 端 @number0/iroh@1.1.0 的底层 iroh 版本保持一致，
+# 否则两端 QUIC/ALPN 握手可能不兼容。
+iroh = "=1.1.0"
+# ticket 解析：与 napi 侧 EndpointTicket 同源同版本（iroh-tickets 1.0.0），
+# 这样 Android 端能直接解析 Node 网桥产出的 ticket 字符串。
+iroh-tickets = "=1.0.0"
 # 异步运行时（iroh 基于 tokio）
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 serde_json = "1"
