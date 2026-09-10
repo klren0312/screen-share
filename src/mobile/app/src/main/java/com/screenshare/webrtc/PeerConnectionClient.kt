@@ -3,7 +3,6 @@ package com.screenshare.webrtc
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
-import org.json.JSONObject
 import org.webrtc.*
 
 // 封装 WebRTC PeerConnection：采集屏幕视频、建立传感器 DataChannel，
@@ -18,7 +17,6 @@ class PeerConnectionClient(
     private var videoSource: VideoSource? = null
     private var capturer: VideoCapturer? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
-    private var sensorChannel: DataChannel? = null
 
     @Volatile private var polite = false
     @Volatile private var makingOffer = false
@@ -84,10 +82,6 @@ class PeerConnectionClient(
         capturer!!.startCapture(720, 1280, 30)
         val videoTrack = factory.createVideoTrack("SCREEN_TRACK", videoSource!!)
         pc!!.addTrack(videoTrack)
-
-        // 传感器姿态数据通道
-        val init = DataChannel.Init()
-        sensorChannel = pc!!.createDataChannel("sensor", init)
     }
 
     fun setPolite(p: Boolean) {
@@ -185,27 +179,6 @@ class PeerConnectionClient(
     // 仅在 impolite 端主动发起（避免 glare）
     fun tryOffer() {
         if (!polite) makeOffer()
-    }
-
-    fun sendSensor(quaternion: FloatArray) {
-        if (sensorChannel?.state() == DataChannel.State.OPEN) {
-            val json =
-                JSONObject()
-                    .apply {
-                        put("t", System.currentTimeMillis())
-                        put(
-                            "q",
-                            JSONObject().apply {
-                                put("x", quaternion[0])
-                                put("y", quaternion[1])
-                                put("z", quaternion[2])
-                                put("w", quaternion[3])
-                            },
-                        )
-                    }.toString()
-            val buffer = DataChannel.Buffer(java.nio.ByteBuffer.wrap(json.toByteArray()), false)
-            sensorChannel!!.send(buffer)
-        }
     }
 
     fun close() {

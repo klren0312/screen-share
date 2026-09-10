@@ -12,20 +12,24 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.screenshare.sensor.PostureTracker
+import com.screenshare.webrtc.IrohSignalingTransport
 import com.screenshare.webrtc.PeerConnectionClient
 import com.screenshare.webrtc.PeerConnectionFactoryHolder
 import com.screenshare.webrtc.SignalingClient
+import com.screenshare.webrtc.SignalingTransport
 
 class ScreenCaptureService : Service() {
     companion object {
         var signalingUrl: String = "ws://10.0.2.2:8080"
         var roomId: String = "DEMO01"
+        // 设置后改用 iroh 直连信令网桥（需 Rust core .so）；否则回退到 WebSocket 信令
+        var irohTicket: String? = null
         private const val NOTIF_ID = 1
     }
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
     private var mediaProjection: MediaProjection? = null
-    private lateinit var signalingClient: SignalingClient
+    private lateinit var signalingClient: SignalingTransport
     private lateinit var peerClient: PeerConnectionClient
     private lateinit var postureTracker: PostureTracker
 
@@ -49,8 +53,14 @@ class ScreenCaptureService : Service() {
 
         val factory = PeerConnectionFactoryHolder.factory(applicationContext)
 
-        // 信令客户端（先于 PeerConnection，便于回调绑定）
-        signalingClient = SignalingClient(signalingUrl, roomId, "caster")
+        // 信令客户端（先于 PeerConnection，便于回调绑定）。
+        // 连接层已迁移到可插拔传输：irohTicket 非空时走 iroh 直连信令网桥，否则回退 WebSocket。
+        signalingClient =
+            if (irohTicket != null) {
+                IrohSignalingTransport(irohTicket!!, roomId, "caster")
+            } else {
+                SignalingClient(signalingUrl, roomId, "caster")
+            }
 
         // PeerConnection：采集屏幕并创建传感器数据通道
         peerClient =
@@ -77,10 +87,10 @@ class ScreenCaptureService : Service() {
         signalingClient.onPeerJoined = { peerClient.tryOffer() }
         signalingClient.connect()
 
-        // 传感器融合 → 通过数据通道发送姿态四元数
+        // 传感器融合 → 经信令传输通道发送姿态四元数（不再走 WebRTC DataChannel）
         postureTracker =
             PostureTracker(applicationContext) { quaternion ->
-                peerClient.sendSensor(quaternion)
+                signalingClient.sendSensor(quaternion)
             }
         postureTracker.start()
 

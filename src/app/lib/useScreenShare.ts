@@ -5,7 +5,6 @@ import { useSession } from "./store";
 import { SignalingClient } from "./signaling";
 import { Peer } from "./peer";
 import { SIGNALING_WS_URL, ICE_SERVERS } from "./config";
-import type { PostureMessage } from "./types";
 
 // 在 Web (viewer) 端挂载会话：连接信令、建立 PeerConnection、
 // 接收远端屏幕流与传感器姿态数据通道。
@@ -25,17 +24,6 @@ export function useScreenShare(roomId: string, role: "viewer" | "caster") {
     const signaling = new SignalingClient(SIGNALING_WS_URL);
     let peer: Peer | null = null;
 
-    const setupDataChannel = (dc: RTCDataChannel) => {
-      dc.onmessage = (ev) => {
-        try {
-          const m = JSON.parse(ev.data as string) as PostureMessage;
-          if (m.q) useSession.getState().setPose(m.q);
-        } catch {
-          /* ignore */
-        }
-      };
-    };
-
     const off = signaling.onMessage(async (msg) => {
       switch (msg.type) {
         case "joined": {
@@ -48,7 +36,7 @@ export function useScreenShare(roomId: string, role: "viewer" | "caster") {
           peer = new Peer(msg.you.polite, ICE_SERVERS, {
             sendSignal: (data) => signaling.sendSignal(roomId, data),
             onTrack: (stream) => useSession.getState().set({ stream }),
-            onDataChannel: (dc) => setupDataChannel(dc),
+            onDataChannel: () => {},
             onConnectionState: (st) =>
               useSession.getState().set({ connectionState: st }),
           });
@@ -68,6 +56,11 @@ export function useScreenShare(roomId: string, role: "viewer" | "caster") {
         }
         case "signal": {
           if (peer) await peer.onSignal(msg.data);
+          break;
+        }
+        case "sensor": {
+          // sensor 姿态经信令中继通道下发（不再走 WebRTC DataChannel）
+          useSession.getState().setPose(msg.q);
           break;
         }
         case "error": {

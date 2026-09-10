@@ -9,19 +9,20 @@ import org.json.JSONObject
 import org.webrtc.IceCandidate
 import org.webrtc.SessionDescription
 
-// 信令客户端：通过 WebSocket 与信令服务通信，转发 SDP/ICE 给 PeerConnectionClient
+// 信令客户端：通过 WebSocket 与信令服务通信，转发 SDP/ICE 与 sensor 给 PeerConnectionClient。
+// 作为 [SignalingTransport] 的 WebSocket 实现（开发/兜底用）。
 class SignalingClient(
     private val url: String,
     private val room: String,
     private val role: String,
-) : WebSocketListener() {
+) : WebSocketListener(), SignalingTransport {
     private val client = OkHttpClient()
     private var ws: WebSocket? = null
 
-    var onJoined: ((selfId: String, polite: Boolean, peerCount: Int) -> Unit)? = null
-    var onPeerJoined: (() -> Unit)? = null
-    var onRemoteDescription: ((SessionDescription) -> Unit)? = null
-    var onRemoteCandidate: ((IceCandidate) -> Unit)? = null
+    override var onJoined: ((selfId: String, polite: Boolean, peerCount: Int) -> Unit)? = null
+    override var onPeerJoined: (() -> Unit)? = null
+    override var onRemoteDescription: ((SessionDescription) -> Unit)? = null
+    override var onRemoteCandidate: ((IceCandidate) -> Unit)? = null
 
     fun connect() {
         val request = Request.Builder().url(url).build()
@@ -106,6 +107,26 @@ class SignalingClient(
             }
         val data = JSONObject().apply { put("candidate", c) }
         send(envelope("signal", data))
+    }
+
+    // sensor 姿态经 WebSocket 信令通道发送（不再走 WebRTC DataChannel）
+    override fun sendSensor(quaternion: FloatArray) {
+        val q =
+            JSONObject().apply {
+                put("x", quaternion[0])
+                put("y", quaternion[1])
+                put("z", quaternion[2])
+                put("w", quaternion[3])
+            }
+        // 顶层 q/t，与 iroh 路径保持一致
+        val msg =
+            JSONObject().apply {
+                put("type", "sensor")
+                put("room", room)
+                put("q", q)
+                put("t", System.currentTimeMillis())
+            }
+        send(msg.toString())
     }
 
     private fun envelope(

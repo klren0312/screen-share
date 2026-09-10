@@ -8,6 +8,7 @@
     "start": "tsx src/server.ts"
   },
   "dependencies": {
+    "@number0/iroh": "^1.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

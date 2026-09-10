@@ -30,6 +30,8 @@ export type ServerMessage =
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-left"; id: string }
   | { type: "signal"; from: string; data: SignalData }
+  // sensor 姿态经信令中继通道下发（不再走 WebRTC DataChannel）
+  | { type: "sensor"; q: { x: number; y: number; z: number; w: number }; t: number }
   | { type: "error"; message: string };
 
 // 通过 WebRTC DataChannel 传输的传感器姿态（单位四元数，设备坐标系）

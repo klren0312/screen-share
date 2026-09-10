@@ -6,15 +6,15 @@
 
 实时屏幕共享平台：Android 设备通过 **MediaProjection** 采集屏幕，经 **WebRTC** 实时传输屏幕画面与**传感器融合姿态**；Web 端（Next.js + Three.js）用**程序生成的 3D 手机模型**同步呈现画面与姿态（屏幕面贴 WebRTC 视频纹理，零外部资源）。
 
-两端采用 **Perfect Negotiation** 协商 SDP/ICE；姿态经独立 **DataChannel (`sensor`)** 发送。
+两端视频轨道采用 **Perfect Negotiation** 协商 SDP/ICE；连接/信令层已迁移到 **iroh**（服务端 iroh 端点桥接 Android 与浏览器，浏览器侧仍走 WebSocket），姿态经信令中继通道发送（不再走 WebRTC DataChannel）。
 
 ## 2. 技术栈
 
 | 层 | 技术 |
 |----|------|
 | Web 客户端 | Next.js 15、React 19、Three.js 0.172、Zustand 5、TypeScript 5.7 |
-| 信令服务 | Node + `ws` + `tsx`（WebSocket，无框架） |
-| Android | Kotlin、WebRTC `org.webrtc:google-webrtc:1.0.32006`、MediaProjection |
+| 信令/连接层 | 服务端 **iroh 网桥**：`@number0/iroh`（Node napi 绑定）+ `ws`（浏览器侧）；Android caster 经 iroh QUIC 直连，浏览器经 WebSocket，网桥在两者间中继 SDP/ICE 与 sensor |
+| Android | Kotlin、WebRTC `org.webrtc:google-webrtc:1.0.32006`、MediaProjection；iroh 端由 Rust core（`src/mobile/iroh-core`，JNI）提供 |
 | 构建 | Gradle（AGP 8.5.2、Kotlin 1.9.24）；Web/信令用 npm |
 
 ## 3. 仓库布局
@@ -65,7 +65,7 @@ pnpm dev
 ## 5. 关键模块职责
 
 **Web（`src/app`）**
-- `lib/peer.ts`：`Peer` 类，封装 Perfect Negotiation（polite/impolite 由服务端分配），处理 SDP/ICE 收发、track、datachannel、`onnegotiationneeded`。
+- `lib/peer.ts`：`Peer` 类，封装 Perfect Negotiation（viewer 固定 polite、caster 固定 impolite，由网桥 `welcome` 下发），处理 SDP/ICE 收发与 `track`；**sensor 姿态不再走 WebRTC DataChannel**，改由信令中继通道下发（见 `useScreenShare` 的 `sensor` 消息处理）。
 - `lib/signaling.ts`：WebSocket 客户端，连接信令服务、收发 `join`/`signal`/`leave`、`joined`/`peer-joined`/`peer-left`/`signal`。
 - `lib/store.ts`：Zustand 会话状态（房间、连接状态、视频流、姿态四元数、标定基线）。
 - `lib/config.ts`：运行期配置——`SIGNALING_WS_URL`、`ICE_SERVERS`（STUN，生产加 TURN）、`DEFAULT_ALIGN`（坐标对齐四元数）、`DEFAULT_ROOM_ID_LENGTH`。
@@ -90,14 +90,16 @@ pnpm dev
 
 ## 6. 通信与协议
 
-**信令（WebSocket JSON）**
-- client→server：`join{room,role}` / `signal{room,data}` / `leave{room}`
-- server→client：`joined{you,peers}` / `peer-joined{peer}` / `peer-left{id}` / `signal{from,data}` / `error{message}`
+**信令（WebSocket / iroh QUIC，换行分隔 JSON）**
+- 浏览器↔网桥（WebSocket）：`join{room,role}` / `signal{room,data}` / `sensor{room,q,t}` / `leave{room}`
+- 网桥→浏览器：`joined{you,peers}` / `peer-joined{peer}` / `peer-left{id}` / `signal{from,data}` / `sensor{q,t}` / `error{message}`
+- Android(iroh)→网桥：`register{room}` / `signal{data}` / `sensor{q,t}` / `leave`
+- 网桥→Android(iroh)：`welcome{you}` / `peer-joined` / `signal{data}` / `peer-left`
 - role：`viewer`（Web）| `caster`（Android）。
 
-**Perfect Negotiation**：服务端在 `join` 时分配 `polite`（先入房间者为 impolite）。仅 impolite 端在对端出现时主动 `tryOffer()`，避免 offer 碰撞（glare）。Web 与 Android 逻辑对称。
+**Perfect Negotiation**：viewer 固定 `polite`、caster 固定 `impolite`（网桥 `welcome` 下发）。仅 impolite 端（caster）在 `peer-joined` 时主动 `tryOffer()`，避免 offer 碰撞（glare）。WebRTC 仅用于视频媒体轨道。
 
-**姿态（WebRTC DataChannel `sensor`）**
+**姿态（经信令中继通道，不再走 WebRTC DataChannel）**
 ```json
 { "t": 1694200000000, "q": { "x":0, "y":0, "z":0, "w":1 } }
 ```
@@ -127,9 +129,9 @@ pnpm dev
 
 - **新增 DataChannel 消息类型**：在 `types.ts`/`protocol.ts` 增加结构 → Android 侧在 `PeerConnectionClient` 发送（参考 `sendSensor`）→ Web 侧在 `useScreenShare`/`store` 接收处理。
 - **改姿态对齐**：调 `src/app/lib/config.ts` 的 `DEFAULT_ALIGN`；必要时同步 `useScreenShare` 的乘序。
-- **加 TURN（跨 NAT）**：在 Web `config.ts` 的 `ICE_SERVERS` 与 Android `PeerConnectionClient` 的 `iceServers` 各加一项，并写入 `.env`/文档。
+- **加 TURN（视频媒体跨严格 NAT）**：连接/信令层已用 iroh 自动 NAT 穿透（relay 兜底），无需为信令配置 STUN/TURN；但 **WebRTC 视频媒体**仍走其自身 ICE，保留 `config.ts`/`PeerConnectionClient` 中的 STUN，跨对称型 NAT 时再追加 TURN 一项。
 - **调传感器融合**：改 `sensor/MadgwickFusion.kt`（含自适应 β 参数与梯度下降实现）。
-- **改信令行为**：`src/signaling/src/{server,rooms}.ts`（房间/转发/角色分配）。
+- **改信令/连接行为**：`src/signaling/src/{irohBridge,server}.ts`（`irohBridge.ts` 维护 iroh 端点与 caster 注册/中继；`server.ts` 维护浏览器侧 WebSocket 与桥接）。Android 侧传输实现见 `src/mobile/.../webrtc/{SignalingTransport,IrohSignalingTransport,WsSignalingTransport,IrohCore}.kt`，iroh 原生核心见 `src/mobile/iroh-core`（Rust）。
 
 ## 10. 验证
 
