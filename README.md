@@ -52,12 +52,12 @@ screen-share/
 
 ### 1. 安装依赖
 ```bash
-npm run install:all
+pnpm install
 ```
 
 ### 2. 启动信令服务 + Web 客户端
 ```bash
-npm run dev
+pnpm dev
 ```
 - 信令服务：`ws://localhost:8080`（端口可用 `SIGNALING_PORT` 覆盖）
 - Web 客户端：`http://localhost:3000`

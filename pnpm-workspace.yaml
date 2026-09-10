@@ -1,0 +1,8 @@
+packages:
+  - "src"
+  - "src/signaling"
+
+# 允许这些依赖执行构建脚本（pnpm v10+ 默认拦截，否则 esbuild/sharp 无法正常工作）
+allowBuilds:
+  esbuild: true
+  sharp: true
