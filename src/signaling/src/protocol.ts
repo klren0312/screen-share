@@ -30,6 +30,8 @@ export type ClientMessage =
   | { type: "join"; room: string; role: Role }
   | { type: "signal"; room: string; data: SignalData }
   | { type: "sensor"; room: string; q: { x: number; y: number; z: number; w: number }; t: number }
+  // 请求本服务的 iroh 连接 ticket（供 Web 端生成二维码，Android 扫码后直连）
+  | { type: "get-ticket" }
   | { type: "leave"; room: string };
 
 export type ServerMessage =
@@ -38,6 +40,8 @@ export type ServerMessage =
   | { type: "peer-left"; id: string }
   | { type: "signal"; from: string; data: SignalData }
   | { type: "sensor"; q: { x: number; y: number; z: number; w: number }; t: number }
+  // 本服务 iroh 端点的连接 ticket（给 Android caster 扫码用）
+  | { type: "iroh-ticket"; ticket: string }
   | { type: "error"; message: string };
 
 // ---- caster(Android) <-> 服务 (iroh QUIC, 换行分隔 JSON) ----

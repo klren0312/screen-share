@@ -35,6 +35,21 @@
         android:layout_height="wrap_content"
         android:text="开始共享" />
 
+    <Button
+        android:id="@+id/scanBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="扫码连接" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="扫码：扫描 Web 端二维码，自动获取 iroh ticket 与房间号"
+        android:textSize="12sp"
+        android:textColor="#888888" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"

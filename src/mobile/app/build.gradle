@@ -42,4 +42,7 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.webrtc:google-webrtc:1.0.32006'
+    // 扫码连接（扫描 Web 端 iroh ticket 二维码）
+    implementation 'androidx.activity:activity-ktx:1.9.3'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
 }

@@ -42,6 +42,11 @@ export class SignalingClient {
     this.send({ type: "signal", room, data });
   }
 
+  /** 请求信令服务的 iroh ticket（用于刷新二维码） */
+  requestTicket() {
+    this.send({ type: "get-ticket" });
+  }
+
   leave(room: string) {
     this.send({ type: "leave", room });
   }

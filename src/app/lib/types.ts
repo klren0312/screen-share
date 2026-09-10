@@ -22,6 +22,8 @@ export type SignalData =
 export type ClientMessage =
   | { type: "join"; room: string; role: Role }
   | { type: "signal"; room: string; data: SignalData }
+  // 请求信令服务的 iroh 连接 ticket（用于生成二维码供 Android 扫码）
+  | { type: "get-ticket" }
   | { type: "leave"; room: string };
 
 // server -> client
@@ -32,6 +34,8 @@ export type ServerMessage =
   | { type: "signal"; from: string; data: SignalData }
   // sensor 姿态经信令中继通道下发（不再走 WebRTC DataChannel）
   | { type: "sensor"; q: { x: number; y: number; z: number; w: number }; t: number }
+  // 信令服务 iroh 端点的连接 ticket（供 Web 端生成二维码，Android 扫码后直连）
+  | { type: "iroh-ticket"; ticket: string }
   | { type: "error"; message: string };
 
 // 通过 WebRTC DataChannel 传输的传感器姿态（单位四元数，设备坐标系）

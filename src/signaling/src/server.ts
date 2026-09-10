@@ -83,6 +83,8 @@ export function startSignalingServer(relay: IrohRelay, wsPort = WS_PORT): WebSoc
             const you = { id, role: msg.role, polite: msg.role === "viewer" };
             const peers = hasCaster ? [{ id: "caster", role: "caster" as const }] : [];
             send(ws, { type: "joined", room, you, peers });
+            // 下发本服务 iroh 端点的连接 ticket，供 Web 端生成二维码给 Android 扫码
+            send(ws, { type: "iroh-ticket", ticket: relay.ticket });
 
             if (hasCaster) {
               send(ws, { type: "peer-joined", peer: { id: "caster", role: "caster" } });
@@ -104,6 +106,11 @@ export function startSignalingServer(relay: IrohRelay, wsPort = WS_PORT): WebSoc
                 send(ws, { type: "sensor", q: msg.q, t: msg.t });
               }
             }
+            break;
+          }
+          case "get-ticket": {
+            // 按需下发 iroh ticket（Web 端可用于刷新二维码）
+            send(ws, { type: "iroh-ticket", ticket: relay.ticket });
             break;
           }
           case "leave": {

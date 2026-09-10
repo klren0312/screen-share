@@ -43,7 +43,7 @@ export default function StatusBar({ roomId }: { roomId: string }) {
       <span>在线端：{peers.length + (selfId ? 1 : 0)}</span>
       <span style={{ color: "#6e7681" }}>信令地址：{SIGNALING_WS_URL}</span>
       <span style={{ color: "#6e7681" }}>
-        提示：在 Android 端输入相同房间号（{roomId}）开始共享
+        提示：用 Android 端「扫码连接」扫描右下角二维码，或手动输入房间号（{roomId}）
       </span>
     </header>
   );

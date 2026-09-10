@@ -24,6 +24,7 @@ Android (Caster, iroh)               信令网桥 (Node: iroh + WS)            W
 - **信令连接层**：服务端 **iroh** 端点（iroh 自动 NAT 穿透 + relay 兜底）桥接 Android 与浏览器；浏览器侧仍是 WebSocket。
 - **WebRTC 媒体**：视频轨道仍由 WebRTC 传输（浏览器原生能力），`sensor` 姿态改走信令中继通道。
 - **Android 传输**：默认回退到 WebSocket（`WsSignalingTransport`）；设置 `irohTicket` 后切换为 iroh 直连（`IrohSignalingTransport`，依赖 Rust core `iroh-core`）。
+- **扫码连接**：Web 观看端将 iroh ticket 展示为二维码，Android 端「扫码连接」扫描后自动完成 iroh 直连与房间号填充，免去手动抄写 ticket。
 - **3D 模型**：Three.js 程序生成手机外形，屏幕面贴 WebRTC 视频纹理，零外部资源。
 
 ## 目录结构
@@ -38,7 +39,7 @@ screen-share/
     ├── app/
     │   ├── api/session     # 会话引导 API
     │   ├── api/webrtc      # ICE 配置 API
-    │   ├── components/     # ThreeViewer / StatusBar
+    │   ├── components/     # ThreeViewer / StatusBar / QrPanel
     │   ├── lib/            # types/config/store/signaling/peer/useScreenShare
     │   ├── page.tsx        # 落地页（创建/加入房间）
     │   └── session/[roomId]/page.tsx  # 3D 观看端
@@ -75,10 +76,14 @@ pnpm dev
 用 **Android Studio** 打开 `src/mobile`：
 1. 配置 SDK（compileSdk 34，minSdk 24）。
 2. 默认走 **WebSocket** 信令：`MainActivity` 输入信令地址（模拟器连宿主机用 `ws://10.0.2.2:8080`）与房间号即可。
-3. **（可选）iroh 直连**：用 `cargo-ndk` 构建 `src/mobile/iroh-core`（详见该目录 `README.md` 与 `build-android.ps1`），
-   把各 ABI 的 `libiroh_core.so` 放入 `app/src/main/jniLibs/<abi>/`，再在 `ScreenCaptureService.irohTicket`
-   填入网桥启动时的 ticket，即可改用 iroh QUIC 直连（自动 NAT 穿透，免 STUN/TURN 配置）。
-4. 点击「开始共享」并授权屏幕捕获；Web 端即可看到屏幕画面与 3D 姿态。
+3. **扫码连接（iroh 直连）**：
+   - 前置：用 `cargo-ndk` 构建 `src/mobile/iroh-core`（详见该目录 `README.md` 与 `build-android.ps1`），
+     把各 ABI 的 `libiroh_core.so` 放入 `app/src/main/jniLibs/<abi>/`。
+   - 打开 Web 观看端，页面右下角会显示 **扫码连接二维码**（内容为 `{"t":"<ticket>","r":"<房间号>"}`）。
+   - Android 端点击「**扫码连接**」，授权相机后扫描该二维码，即自动填入 iroh ticket 与房间号并发起共享
+     （iroh QUIC 直连，自动 NAT 穿透，免 STUN/TURN 配置）。
+   - 也可手动：在 `ScreenCaptureService.irohTicket` 填入网桥启动日志中的 `connect ticket`。
+4. 点击「开始共享」（或扫码后自动进入）并授权屏幕捕获；Web 端即可看到屏幕画面与 3D 姿态。
 > 注：当前工作环境无 Android SDK/Gradle 与 Rust 工具链，Android 端仅保证源码结构与 API 使用正确，需在本机 Android Studio 中构建验证（iroh 模式还需 cargo-ndk）。
 
 ## WebRTC 协商策略
@@ -88,7 +93,11 @@ pnpm dev
 
 ## 数据协议
 - **信令（WebSocket / iroh QUIC，换行分隔 JSON）**：
-  - 浏览器↔网桥：`join` / `signal{description|candidate}` / `leave` / `sensor{q,t}`；网桥回 `joined` / `peer-joined` / `peer-left` / `signal{from,data}` / `sensor{q,t}`。
+  - 浏览器↔网桥：`join` / `signal{description|candidate}` / `leave` / `sensor{q,t}` / `get-ticket`；网桥回 `joined` / `peer-joined` / `peer-left` / `signal{from,data}` / `sensor{q,t}` / `iroh-ticket{ticket}`。viewer 加入房间时网桥会自动下发 `iroh-ticket`，页面据此生成二维码。
+- **扫码连接二维码内容**（JSON；Android 端解析 `t`=ticket、`r`=房间号）：
+  ```json
+  { "t": "<iroh ticket>", "r": "DEMO01" }
+  ```
   - Android(iroh)↔网桥：`register{room}` / `signal` / `sensor` / `leave`；网桥回 `welcome{you}` / `peer-joined` / `signal` / `peer-left`。
 - **姿态（经信令中继通道，不再走 WebRTC DataChannel）**：
   ```json
