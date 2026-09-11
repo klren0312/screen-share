@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -25,6 +27,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var roomInput: EditText
     private lateinit var serverInput: EditText
     private lateinit var status: TextView
+
+    // 屏幕捕获回调（替代 deprecated 的 startActivityForResult / onActivityResult）
+    private lateinit var captureLauncher: ActivityResultLauncher<Intent>
 
     // 扫码结果回调（ScanContract 输出 ScanIntentResult）
     private val scanLauncher =
@@ -50,10 +55,30 @@ class MainActivity : AppCompatActivity() {
         val startBtn = findViewById<Button>(R.id.startBtn)
         val scanBtn = findViewById<Button>(R.id.scanBtn)
 
+        captureLauncher =
+            registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode == RESULT_OK && result.data != null) {
+                    val intent =
+                        Intent(this, ScreenCaptureService::class.java).apply {
+                            putExtra("resultCode", result.resultCode)
+                            putExtra("data", result.data)
+                        }
+                    startForegroundService(intent)
+                    finish()
+                }
+            }
+
         startBtn.setOnClickListener {
-            val room = roomInput.text.toString().trim().ifEmpty { "DEMO01" }
+            val room =
+                roomInput.text
+                    .toString()
+                    .trim()
+                    .ifEmpty { "DEMO01" }
             val server =
-                serverInput.text.toString().trim().ifEmpty { "ws://10.0.2.2:8080" }
+                serverInput.text
+                    .toString()
+                    .trim()
+                    .ifEmpty { "ws://10.0.2.2:8080" }
             ScreenCaptureService.signalingUrl = server
             ScreenCaptureService.roomId = room
             status.text = "请求屏幕捕获权限…"
@@ -140,26 +165,14 @@ class MainActivity : AppCompatActivity() {
                 val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
                 if (granted) startScan() else status.text = "需要相机权限才能扫码"
             }
-            REQUEST_CODE_PERMISSIONS -> launchCapture()
+
+            REQUEST_CODE_PERMISSIONS -> {
+                launchCapture()
+            }
         }
     }
 
     private fun launchCapture() {
-        val intent = projectionManager.createScreenCaptureIntent()
-        startActivityForResult(intent, REQUEST_CODE_CAPTURE)
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_CODE_CAPTURE && resultCode == RESULT_OK && data != null) {
-            val intent =
-                Intent(this, ScreenCaptureService::class.java).apply {
-                    putExtra("resultCode", resultCode)
-                    putExtra("data", data)
-                }
-            ContextCompat.startForegroundService(this, intent)
-            finish()
-        }
+        captureLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
 }

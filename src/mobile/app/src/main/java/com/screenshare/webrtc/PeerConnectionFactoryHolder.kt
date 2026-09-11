@@ -16,18 +16,21 @@ object PeerConnectionFactoryHolder {
                     .builder(context)
                     .createInitializationOptions(),
             )
+            val eglBase =
+                EglBase.create()
+                    ?: throw RuntimeException("EGL initialization failed: EglBase.create() returned null")
             factory =
                 PeerConnectionFactory
                     .builder()
                     .setVideoEncoderFactory(
                         org.webrtc.DefaultVideoEncoderFactory(
-                            EglBase.create().eglBaseContext,
+                            eglBase.eglBaseContext,
                             true,
                             true,
                         ),
                     ).setVideoDecoderFactory(
                         org.webrtc.DefaultVideoDecoderFactory(
-                            EglBase.create().eglBaseContext,
+                            eglBase.eglBaseContext,
                         ),
                     ).createPeerConnectionFactory()
         }

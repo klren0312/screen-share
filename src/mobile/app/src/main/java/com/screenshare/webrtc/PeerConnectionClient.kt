@@ -20,7 +20,9 @@ class PeerConnectionClient(
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
     @Volatile private var polite = false
+
     @Volatile private var makingOffer = false
+
     @Volatile private var ignoreOffer = false
 
     var onLocalDescription: ((SessionDescription) -> Unit)? = null
@@ -73,11 +75,17 @@ class PeerConnectionClient(
                     ) {}
                 },
             )
+        if (pc == null) {
+            throw RuntimeException("PeerConnection creation failed")
+        }
 
         // 屏幕采集
         capturer = ScreenCapturerAndroid(captureIntent, mediaProjectionCallback)
+        val eglBase =
+            EglBase.create()
+                ?: throw RuntimeException("EGL initialization failed")
         surfaceTextureHelper =
-            SurfaceTextureHelper.create("CaptureThread", EglBase.create().eglBaseContext)
+            SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext)
         videoSource = factory.createVideoSource(true)
         capturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
         capturer!!.startCapture(720, 1280, 30)
@@ -155,12 +163,17 @@ class PeerConnectionClient(
                             override fun onCreateSuccess(p0: SessionDescription?) {}
 
                             override fun onSetSuccess() {
+                                makingOffer = false
                                 offer?.let { onLocalDescription?.invoke(it) }
                             }
 
-                            override fun onCreateFailure(p0: String?) {}
+                            override fun onCreateFailure(p0: String?) {
+                                makingOffer = false
+                            }
 
-                            override fun onSetFailure(p0: String?) {}
+                            override fun onSetFailure(p0: String?) {
+                                makingOffer = false
+                            }
                         },
                         offer,
                     )
@@ -168,13 +181,16 @@ class PeerConnectionClient(
 
                 override fun onSetSuccess() {}
 
-                override fun onCreateFailure(p0: String?) {}
+                override fun onCreateFailure(p0: String?) {
+                    makingOffer = false
+                }
 
-                override fun onSetFailure(p0: String?) {}
+                override fun onSetFailure(p0: String?) {
+                    makingOffer = false
+                }
             },
             MediaConstraints(),
         )
-        makingOffer = false
     }
 
     // 仅在 impolite 端主动发起（避免 glare）

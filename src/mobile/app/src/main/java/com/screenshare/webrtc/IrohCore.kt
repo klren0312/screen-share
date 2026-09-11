@@ -16,17 +16,34 @@ import java.util.concurrent.ConcurrentHashMap
 object IrohCore {
     private val transports = ConcurrentHashMap<Long, IrohSignalingTransport>()
 
-    private external fun connect(ticket: String, room: String, role: String): Long
-    private external fun sendMsg(handle: Long, message: String)
+    private external fun connect(
+        ticket: String,
+        room: String,
+        role: String,
+    ): Long
+
+    private external fun sendMsg(
+        handle: Long,
+        message: String,
+    )
+
     private external fun closeConn(handle: Long)
 
-    fun register(transport: IrohSignalingTransport, ticket: String, room: String, role: String): Long {
+    fun register(
+        transport: IrohSignalingTransport,
+        ticket: String,
+        room: String,
+        role: String,
+    ): Long {
         val handle = connect(ticket, room, role)
         transports[handle] = transport
         return handle
     }
 
-    fun send(handle: Long, message: String) = sendMsg(handle, message)
+    fun send(
+        handle: Long,
+        message: String,
+    ) = sendMsg(handle, message)
 
     fun close(handle: Long) {
         if (handle != 0L) closeConn(handle)
@@ -35,11 +52,18 @@ object IrohCore {
 
     /** 由 Rust(JNI) 回调：handle 对应的连接收到一条 JSON 消息 */
     @JvmStatic
-    fun onMessage(handle: Long, json: String) {
+    fun onMessage(
+        handle: Long,
+        json: String,
+    ) {
         transports[handle]?.onRawMessage(json)
     }
 
     init {
-        System.loadLibrary("iroh_core")
+        try {
+            System.loadLibrary("iroh_core")
+        } catch (e: Throwable) {
+            android.util.Log.w("IrohCore", "Failed to load libiroh_core.so — iroh transport will be unavailable", e)
+        }
     }
 }

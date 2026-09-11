@@ -20,7 +20,6 @@ class IrohSignalingTransport(
     private val room: String,
     private val role: String,
 ) : SignalingTransport {
-
     private var handle: Long = 0
 
     override var onJoined: ((selfId: String, polite: Boolean, peerCount: Int) -> Unit)? = null
@@ -30,8 +29,16 @@ class IrohSignalingTransport(
 
     override fun connect() {
         // 触发 IrohCore 类初始化（加载 libircore.so）并建立到网桥的连接
-        handle = IrohCore.register(this, ticket, room, role)
+        // 若 native 库缺失或 ABI 不匹配，捕获异常并标记 handle=0，后续发送降级为空操作
+        try {
+            handle = IrohCore.register(this, ticket, room, role)
+        } catch (e: Throwable) {
+            android.util.Log.w("IrohSignaling", "iroh native init failed, falling back to no-op", e)
+            handle = 0L
+        }
     }
+
+    private fun isIrohAvailable(): Boolean = handle != 0L
 
     /** 由 [IrohCore.onMessage] 回调，解析 JSON 信令并分派给上层 */
     internal fun onRawMessage(json: String) {
@@ -45,7 +52,11 @@ class IrohSignalingTransport(
                     you.optInt("peerCount", 0),
                 )
             }
-            "peer-joined" -> onPeerJoined?.invoke()
+
+            "peer-joined" -> {
+                onPeerJoined?.invoke()
+            }
+
             "signal" -> {
                 val data = msg.getJSONObject("data")
                 if (data.has("description")) {
@@ -54,8 +65,11 @@ class IrohSignalingTransport(
                     val sdp = desc.getString("sdp")
                     onRemoteDescription?.invoke(
                         SessionDescription(
-                            if (type == "offer") SessionDescription.Type.OFFER
-                            else SessionDescription.Type.ANSWER,
+                            if (type == "offer") {
+                                SessionDescription.Type.OFFER
+                            } else {
+                                SessionDescription.Type.ANSWER
+                            },
                             sdp,
                         ),
                     )
@@ -70,41 +84,78 @@ class IrohSignalingTransport(
                     )
                 }
             }
+
             "peer-left" -> { /* 当前为 1:1，忽略 */ }
         }
     }
 
     override fun sendSignal(description: SessionDescription) {
-        val d = JSONObject().apply {
-            put("type", description.type.canonicalForm())
-            put("sdp", description.description)
-        }
+        if (!isIrohAvailable()) return
+        val d =
+            JSONObject().apply {
+                put("type", description.type.canonicalForm())
+                put("sdp", description.description)
+            }
         val data = JSONObject().apply { put("description", d) }
-        IrohCore.send(handle, JSONObject().apply { put("type", "signal"); put("data", data) }.toString())
+        try {
+            IrohCore.send(
+                handle,
+                JSONObject()
+                    .apply {
+                        put("type", "signal")
+                        put("data", data)
+                    }.toString(),
+            )
+        } catch (e: Throwable) {
+            android.util.Log.w("IrohSignaling", "sendSignal failed", e)
+        }
     }
 
     override fun sendSignal(candidate: IceCandidate) {
-        val c = JSONObject().apply {
-            put("candidate", candidate.sdp)
-            put("sdpMid", candidate.sdpMid)
-            put("sdpMLineIndex", candidate.sdpMLineIndex)
-        }
+        if (!isIrohAvailable()) return
+        val c =
+            JSONObject().apply {
+                put("candidate", candidate.sdp)
+                put("sdpMid", candidate.sdpMid)
+                put("sdpMLineIndex", candidate.sdpMLineIndex)
+            }
         val data = JSONObject().apply { put("candidate", c) }
-        IrohCore.send(handle, JSONObject().apply { put("type", "signal"); put("data", data) }.toString())
+        try {
+            IrohCore.send(
+                handle,
+                JSONObject()
+                    .apply {
+                        put("type", "signal")
+                        put("data", data)
+                    }.toString(),
+            )
+        } catch (e: Throwable) {
+            android.util.Log.w("IrohSignaling", "sendSignal candidate failed", e)
+        }
     }
 
     override fun sendSensor(quaternion: FloatArray) {
-        val q = JSONObject().apply {
-            put("x", quaternion[0]); put("y", quaternion[1]); put("z", quaternion[2]); put("w", quaternion[3])
-        }
-        IrohCore.send(
-            handle,
+        if (!isIrohAvailable()) return
+        val q =
             JSONObject().apply {
-                put("type", "sensor")
-                put("q", q)
-                put("t", System.currentTimeMillis())
-            }.toString(),
-        )
+                put("x", quaternion[0])
+                put("y", quaternion[1])
+                put("z", quaternion[2])
+                put("w", quaternion[3])
+            }
+        try {
+            IrohCore.send(
+                handle,
+                JSONObject()
+                    .apply {
+                        put("type", "sensor")
+                        put("q", q)
+                        put("t", System.currentTimeMillis())
+                    }.toString(),
+            )
+        } catch (e: Throwable) {
+            android.util.Log.w("IrohSignaling", "sendSensor failed", e)
+        }
     }
 
     override fun close() {

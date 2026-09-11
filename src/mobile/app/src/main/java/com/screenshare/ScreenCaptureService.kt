@@ -9,7 +9,9 @@ import android.content.Intent
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.screenshare.sensor.PostureTracker
 import com.screenshare.webrtc.IrohSignalingTransport
@@ -17,11 +19,13 @@ import com.screenshare.webrtc.PeerConnectionClient
 import com.screenshare.webrtc.PeerConnectionFactoryHolder
 import com.screenshare.webrtc.SignalingClient
 import com.screenshare.webrtc.SignalingTransport
+import kotlin.concurrent.thread
 
 class ScreenCaptureService : Service() {
     companion object {
         var signalingUrl: String = "ws://10.0.2.2:8080"
         var roomId: String = "DEMO01"
+
         // 设置后改用 iroh 直连信令网桥（需 Rust core .so）；否则回退到 WebSocket 信令
         var irohTicket: String? = null
         private const val NOTIF_ID = 1
@@ -33,6 +37,9 @@ class ScreenCaptureService : Service() {
     private lateinit var peerClient: PeerConnectionClient
     private lateinit var postureTracker: PostureTracker
 
+    @Volatile
+    private var isStopping = false
+
     override fun onCreate() {
         super.onCreate()
         mediaProjectionManager =
@@ -40,7 +47,11 @@ class ScreenCaptureService : Service() {
         startForeground(NOTIF_ID, buildNotification())
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         val data =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -49,12 +60,19 @@ class ScreenCaptureService : Service() {
                 @Suppress("DEPRECATION")
                 intent?.getParcelableExtra("data")
             }
-        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data!!)
+        if (data == null) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+        if (mediaProjection == null) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val factory = PeerConnectionFactoryHolder.factory(applicationContext)
 
-        // 信令客户端（先于 PeerConnection，便于回调绑定）。
-        // 连接层已迁移到可插拔传输：irohTicket 非空时走 iroh 直连信令网桥，否则回退 WebSocket。
+        // 信令客户端（轻量，先在主线程创建以便后续回调绑定）
         signalingClient =
             if (irohTicket != null) {
                 IrohSignalingTransport(irohTicket!!, roomId, "caster")
@@ -62,37 +80,66 @@ class ScreenCaptureService : Service() {
                 SignalingClient(signalingUrl, roomId, "caster")
             }
 
-        // PeerConnection：采集屏幕并创建传感器数据通道
-        peerClient =
-            PeerConnectionClient(
-                applicationContext,
-                factory,
-                data!!,
-                object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        // 系统停止了屏幕投影（如用户从状态栏停止），结束采集
-                        stopSelf()
+        // PeerConnection 初始化涉及 EGL + JNI + 采集器，属于重量级操作，
+        // 必须在后台线程执行以避免 ANR（Android 12+ 对前台服务也有 ANR 限制）。
+        // 创建完成后再切回主线程绑定回调。
+        thread {
+            if (isStopping) return@thread
+
+            try {
+                val client =
+                    PeerConnectionClient(
+                        applicationContext,
+                        factory,
+                        data,
+                        object : MediaProjection.Callback() {
+                            override fun onStop() {
+                                // 系统停止了屏幕投影（如用户从状态栏停止），结束采集
+                                stopSelf()
+                            }
+                        },
+                    )
+
+                if (isStopping) {
+                    client.close()
+                    return@thread
+                }
+
+                Handler(Looper.getMainLooper()).post {
+                    if (isStopping) {
+                        client.close()
+                        return@post
                     }
-                },
-            ).apply {
-                onLocalDescription = { signalingClient.sendSignal(it) }
-                onLocalCandidate = { signalingClient.sendSignal(it) }
-                onConnectionChange = { /* 可在通知中展示连接状态 */ }
-            }
 
-        signalingClient.onJoined = { _, polite, peerCount ->
-            peerClient.setPolite(polite)
-            if (peerCount > 0) peerClient.tryOffer()
+                    peerClient = client
+
+                    peerClient.apply {
+                        onLocalDescription = { signalingClient.sendSignal(it) }
+                        onLocalCandidate = { signalingClient.sendSignal(it) }
+                        onConnectionChange = { /* 可在通知中展示连接状态 */ }
+                    }
+
+                    signalingClient.onJoined = { _, polite, peerCount ->
+                        peerClient.setPolite(polite)
+                        if (peerCount > 0) peerClient.tryOffer()
+                    }
+                    signalingClient.onPeerJoined = { peerClient.tryOffer() }
+                    signalingClient.connect()
+
+                    // 传感器融合 → 经信令传输通道发送姿态四元数
+                    postureTracker =
+                        PostureTracker(applicationContext) { quaternion ->
+                            signalingClient.sendSensor(quaternion)
+                        }
+                    postureTracker.start()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ScreenCaptureService", "PeerConnection init failed", e)
+                Handler(Looper.getMainLooper()).post {
+                    stopSelf()
+                }
+            }
         }
-        signalingClient.onPeerJoined = { peerClient.tryOffer() }
-        signalingClient.connect()
-
-        // 传感器融合 → 经信令传输通道发送姿态四元数（不再走 WebRTC DataChannel）
-        postureTracker =
-            PostureTracker(applicationContext) { quaternion ->
-                signalingClient.sendSensor(quaternion)
-            }
-        postureTracker.start()
 
         return START_STICKY
     }
@@ -126,11 +173,29 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        isStopping = true
         super.onDestroy()
-        postureTracker.stop()
-        signalingClient.close()
-        peerClient.close()
+        // postureTracker / peerClient 可能因后台线程初始化未完成而未赋值
+        if (::postureTracker.isInitialized) {
+            try {
+                postureTracker.stop()
+            } catch (_: Exception) {
+            }
+        }
+        if (::signalingClient.isInitialized) {
+            try {
+                signalingClient.close()
+            } catch (_: Exception) {
+            }
+        }
+        if (::peerClient.isInitialized) {
+            try {
+                peerClient.close()
+            } catch (_: Exception) {
+            }
+        }
         mediaProjection?.stop()
+        mediaProjection = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
