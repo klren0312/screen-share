@@ -1,3 +1,8 @@
 # Default ignored files
 /shelf/
 /workspace.xml
+
+# 设备选择缓存：记录本机连接过的真机/模拟器，属本地状态，
+# 会随设备变化反复产生 diff，不纳入版本控制（IDE 会自行重建）
+/caches/
+/deviceManager.xml
