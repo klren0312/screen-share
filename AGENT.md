@@ -4,138 +4,169 @@
 
 ## 1. 项目简介
 
-实时屏幕共享平台：Android 设备通过 **MediaProjection** 采集屏幕，经 **WebRTC** 实时传输屏幕画面与**传感器融合姿态**；Web 端（Next.js + Three.js）用**程序生成的 3D 手机模型**同步呈现画面与姿态（屏幕面贴 WebRTC 视频纹理，零外部资源）。
+实时屏幕共享平台：Android 设备通过 **MediaProjection** 采集屏幕，用 **MediaCodec** 硬编码 H.264，
+经 **iroh QUIC** 直连推送到 **Electron** 桌面端；桌面端主进程接收码流，经 IPC 交给渲染进程用
+**WebCodecs** 解码，最终以 **Three.js 程序生成的 3D 手机模型** 同步呈现画面与**传感器融合姿态**。
 
-两端视频轨道采用 **Perfect Negotiation** 协商 SDP/ICE；连接/信令层已迁移到 **iroh**（服务端 iroh 端点桥接 Android 与浏览器，浏览器侧仍走 WebSocket），姿态经信令中继通道发送（不再走 WebRTC DataChannel）。
+**媒体不经过 WebRTC**：没有 SDP/ICE，不需要 STUN/TURN，也不需要信令服务器。两端靠桌面端
+展示的 iroh ticket 二维码建立点对点连接（iroh 自带 relay 兜底，跨 NAT 可直连）。
+改造前的 Next.js 观看端与 WebSocket 信令服务已随 ADR-0002 删除，仓库只剩 desktop 与 mobile 两条链路。
 
 ## 2. 技术栈
 
 | 层 | 技术 |
 |----|------|
-| Web 客户端 | Next.js 15、React 19、Three.js 0.172、Zustand 5、TypeScript 5.7 |
-| 信令/连接层 | 服务端 **iroh 网桥**：`@number0/iroh`（Node napi 绑定）+ `ws`（浏览器侧）；Android caster 经 iroh QUIC 直连，浏览器经 WebSocket，网桥在两者间中继 SDP/ICE 与 sensor |
-| Android | Kotlin、WebRTC `org.webrtc:google-webrtc:1.0.32006`、MediaProjection；iroh 端由 Rust core（`src/mobile/iroh-core`，JNI）提供 |
-| 构建 | Gradle（AGP 8.5.2、Kotlin 1.9.24）；Web/信令用 npm |
+| 桌面接收端 | Electron 33 + electron-vite、React 19、Three.js 0.172、Zustand 5、TypeScript 5.7 |
+| 桌面端 iroh | `@number0/iroh`（napi 绑定，**仅主进程可用**；渲染进程是 Chromium，跑不了 iroh） |
+| 桌面端解码 | **WebCodecs `VideoDecoder`**（`avc: { format: "annexb" }`）→ `CanvasTexture` |
+| Android | Kotlin、**MediaCodec（video/avc 硬编）**、MediaProjection；不再使用 `org.webrtc` 传媒体 |
+| Android 连接 | Rust core `src/mobile/iroh-core`（JNI，`iroh = "=1.1.0"`） |
+| 构建 | Gradle（AGP 8.5.2、Kotlin 1.9.24）；桌面端用 npm（pnpm workspace） |
 
 ## 3. 仓库布局
 
 ```
 screen-share/
-├── package.json            # 根编排：install:all / dev（concurrently 并发起 web+signaling）
-├── .env.example            # 环境变量示例（NEXT_PUBLIC_SIGNALING_WS_URL、SIGNALING_PORT/PORT）
+├── package.json            # 根编排：dev / build / typecheck（转发到 desktop）
+├── .npmrc                  # electron_mirror（国内网络必需，否则 postinstall 卡死）
 ├── AGENT.md / README.md / CONTEXT.md
 ├── docs/adr/               # ADR 文档
-├── jni/                    # 预编译 libjingle_peerconnection_so.so（各 ABI），供 Android 链接
 └── src/
-    ├── package.json        # Next.js Web 客户端
-    ├── app/
-    │   ├── api/session/    # 会话引导 API（房间号生成）
-    │   ├── api/webrtc/     # ICE 配置 API（可选，回 STUN/TURN）
-    │   ├── components/     # ThreeViewer（3D 模型+视频纹理）、StatusBar
-    │   ├── lib/            # types/config/store/signaling/peer/useScreenShare
-    │   ├── page.tsx        # 落地页（创建/加入房间）
-    │   └── session/[roomId]/page.tsx  # 3D 观看端
-    ├── signaling/          # 独立 WebSocket 信令服务
-    │   └── src/{server,rooms,protocol}.ts
-    └── mobile/             # Android 原生应用（Kotlin），用 Android Studio 打开本目录
-        └── app/src/main/java/com/screenshare/
-            ├── MainActivity.kt              # UI：输入信令地址/房间号、开始共享
-            ├── ScreenCaptureService.kt      # 前台服务：持有 PeerConnectionClient + PostureTracker
-            ├── webrtc/                      # SignalingClient / PeerConnectionClient / PeerConnectionFactoryHolder
-            └── sensor/                      # PostureTracker（传感器融合编排）、MadgwickFusion（AHRS）
+    ├── desktop/            # ★ Electron 接收端（主链路）
+    │   ├── electron.vite.config.ts   # main/preload/renderer 三段构建
+    │   └── src/
+    │       ├── shared/protocol.ts    # 媒体帧协议（三端唯一定义源）
+    │       ├── main/index.ts         # 窗口、二维码、IPC 桥接
+    │       ├── main/irohViewer.ts    # iroh 端点、accept、帧解析与重排
+    │       ├── preload/index.ts      # contextBridge 白名单 API
+    │       └── renderer/             # React UI + WebCodecs 解码管线
+    ├── mobile/             # Android 采集端
+    │   ├── iroh-core/      # Rust(JNI)：连接 + sendMediaFrame
+    │   └── app/src/main/java/com/screenshare/
+    │       ├── MainActivity.kt              # 扫码/权限/启动服务（传 resultCode）
+    │       ├── ScreenCaptureService.kt      # 前台服务：换取 MediaProjection + 推流
+    │       ├── capture/MediaCodecEncoder.kt # 采集 + H.264 编码
+    │       ├── webrtc/IrohMediaTransport.kt # 控制消息 + 媒体帧发送
+    │       ├── webrtc/IrohCore.kt           # JNI 门面
+    │       └── sensor/                      # PostureTracker / MadgwickFusion
 ```
 
 ## 4. 运行方式
 
 ```bash
-# 1. 安装依赖（web + signaling）
+# 1. 安装依赖
 pnpm install
 
-# 2. 启动 信令服务(:8080) + Web 客户端(:3000)
+# 2. 启动 Electron 接收端（窗口底部显示 iroh ticket 二维码）
 pnpm dev
-# 信令端口可用 SIGNALING_PORT（服务端读 PORT）覆盖；Web 信令地址用 NEXT_PUBLIC_SIGNALING_WS_URL
 
-# 3. Android 端：用 Android Studio 打开 src/mobile
-#    - compileSdk 34 / minSdk 24；MainActivity 输入信令地址
-#      （模拟器连宿主机用 ws://10.0.2.2:8080）与房间号，点击「开始共享」并授权屏幕捕获
+# 3. Android：用 Android Studio 打开 src/mobile
+#    - 先构建 iroh 原生库（src/mobile/iroh-core，见其 README）
+#    - App 内「扫码连接」扫桌面端二维码 → 「开始共享」→ 授权屏幕捕获
 ```
 
-> 注：当前工作环境无 Android SDK/Gradle，Android 端只保证源码结构与 API 用法正确，需在本机 Android Studio 构建验证。
+> 注：当前工作环境无 Android SDK/Gradle 与 Rust 工具链，Android 端只保证源码结构与 API 用法正确，需在本机 Android Studio 构建验证。
 
 ## 5. 关键模块职责
 
-**Web（`src/app`）**
-- `lib/peer.ts`：`Peer` 类，封装 Perfect Negotiation（viewer 固定 polite、caster 固定 impolite，由网桥 `welcome` 下发），处理 SDP/ICE 收发与 `track`；**sensor 姿态不再走 WebRTC DataChannel**，改由信令中继通道下发（见 `useScreenShare` 的 `sensor` 消息处理）。
-- `lib/signaling.ts`：WebSocket 客户端，连接信令服务、收发 `join`/`signal`/`leave`、`joined`/`peer-joined`/`peer-left`/`signal`。
-- `lib/store.ts`：Zustand 会话状态（房间、连接状态、视频流、姿态四元数、标定基线）。
-- `lib/config.ts`：运行期配置——`SIGNALING_WS_URL`、`ICE_SERVERS`（STUN，生产加 TURN）、`DEFAULT_ALIGN`（坐标对齐四元数）、`DEFAULT_ROOM_ID_LENGTH`。
-- `lib/types.ts`：Web 端信令/姿态类型（**与 `signaling/src/protocol.ts` 刻意保持结构一致**）。
-- `lib/useScreenShare.ts`：组合 hook，驱动加入房间、建立 Peer、接收视频与姿态。
-- `components/ThreeViewer.tsx`：程序生成手机外形，屏幕面贴 WebRTC 视频纹理；按 `modelQuat = DEFAULT_ALIGN × base⁻¹ × pose` 应用姿态。
-- `components/StatusBar.tsx`：连接/标定状态与「校准姿态 / 重置标定」操作。
-
-**信令（`src/signaling`）**
-- `server.ts`：`WebSocketServer`，按 `ClientMessage` 路由 `join`/`signal`/`leave`，维护连接 id 与 role。
-- `rooms.ts`：房间注册表；`joinRoom` 时分配 `polite`（先入房间者为 impolite），返回 `joined` 与现有 `peers`，并 `notifyPeers` 广播 `peer-joined`。
-- `protocol.ts`：信令消息类型（与 Web `types.ts` 同步）。
+**桌面端（`src/desktop`）**
+- `shared/protocol.ts`：**协议唯一定义源**——ALPN、帧头编解码、标志位、控制消息与 IPC 通道名。
+  改协议时 Android 的 `IrohMediaTransport.kt`（帧头）与 `iroh-core/src/lib.rs`（转发）必须同步。
+- `main/irohViewer.ts`：`Endpoint.builder()` + `presetN0` + `apply ALPN`；`acceptNext()` 接受连接后
+  并行消费控制流（`acceptBi`）与媒体流（`acceptUni` 循环）。**每帧一条 uni stream**，按 `ptsUs`
+  做 3 帧窗口重排（QUIC 只保证流内有序），空闲 30ms 强制 flush。
+- `main/index.ts`：创建窗口、生成 ticket 二维码（`{"t": ticket}`）、把 viewer 事件经
+  `webContents.send` 转发给渲染进程；`did-finish-load` 与 `startViewer()` 两个方向都补发 init，
+  避免"窗口早于/晚于 iroh 就绪"的竞态。
+- `renderer/lib/decoder.ts`：`H264Decoder` 封装 WebCodecs。**codec string 以 SPS 解析结果为准**
+  （`avc1.PPCCLL`），hello 里的值只是提示；解码出错后重建并请求关键帧；无参数集时丢弃 delta 帧。
+- `renderer/components/ThreeViewer.tsx`：解码帧画进离屏 canvas → `CanvasTexture` → 机身屏幕面；
+  姿态应用逻辑与原 Web 端一致（`DEFAULT_ALIGN × base⁻¹ × pose`，`slerp` 平滑）。
 
 **Android（`src/mobile`）**
-- `MainActivity.kt`：输入信令地址/房间号，启动 `ScreenCaptureService`（带 MediaProjection 权限 Intent）。
-- `ScreenCaptureService.kt`：前台服务（foregroundServiceType=mediaProjection）；创建 `PeerConnectionFactory`、`SignalingClient`、`PeerConnectionClient`、`PostureTracker`；`onDestroy` 释放资源。
-- `webrtc/SignalingClient.kt`：WebSocket 客户端，连接信令服务并中继 SDP/ICE（`sendSignal`、`onJoined`/`onPeerJoined` 回调）。
-- `webrtc/PeerConnectionClient.kt`：封装 `PeerConnection`；用 `ScreenCapturerAndroid` 采集屏幕、`createVideoTrack` 并 `addTrack`；创建 `sensor` DataChannel；Perfect Negotiation 状态机（`polite`/`makingOffer`/`ignoreOffer`）；`sendSensor(quaternion)` 经 DataChannel 发送姿态。
-- `webrtc/PeerConnectionFactoryHolder.kt`：单例 `PeerConnectionFactory`。
-- `sensor/PostureTracker.kt`：注册加速度计/陀螺仪/磁力计，`onSensorChanged` 调用 `MadgwickFusion.update` 并回调融合四元数。
-- `sensor/MadgwickFusion.kt`：Madgwick AHRS（梯度下降融合加速度计+陀螺仪+磁力计）；**β 自适应**（见第 7 节）。
+- `capture/MediaCodecEncoder.kt`：MediaProjection → `createVirtualDisplay`（输出到 MediaCodec 的
+  `inputSurface`）→ 编码器输出。负责 **AVCC→Annex-B 转换**（部分设备输出长度前缀）、参数集单独
+  成帧下发、`requestKeyframe()`。
+- `webrtc/IrohMediaTransport.kt`：`hello`/`sensor` 控制消息 + `sendVideoFrame()`（拼 13 字节头）。
+  收到的 `request-keyframe` 驱动编码器出 IDR。
+- `ScreenCaptureService.kt`：**由服务自己换取 `MediaProjection`**（旧实现必须让 `ScreenCapturerAndroid`
+  独占换取，现已不再使用该类）；先 `startForegroundWithType()` 再 `getMediaProjection()`，并注册
+  `MediaProjection.Callback`。
+- `webrtc/IrohCore.kt`：JNI 门面，`MessageSink` 接口让信令/媒体两类传输共用回调分发。
+
+**Rust core（`src/mobile/iroh-core`）**
+- `connect` 建立 QUIC 连接并发送 `register`；读线程按 `\n` 切分 JSON 回调 Kotlin。
+- `sendMediaFrame` **非阻塞投递**到 mpsc 队列（容量 64，**满则丢帧**），后台任务每帧
+  `open_uni()` + `write_all` + `finish()`。绝不阻塞采集/编码线程。
 
 ## 6. 通信与协议
 
-**信令（WebSocket / iroh QUIC，换行分隔 JSON）**
-- 浏览器↔网桥（WebSocket）：`join{room,role}` / `signal{room,data}` / `sensor{room,q,t}` / `leave{room}`
-- 网桥→浏览器：`joined{you,peers}` / `peer-joined{peer}` / `peer-left{id}` / `signal{from,data}` / `sensor{q,t}` / `error{message}`
-- Android(iroh)→网桥：`register{room}` / `signal{data}` / `sensor{q,t}` / `leave`
-- 网桥→Android(iroh)：`welcome{you}` / `peer-joined` / `signal{data}` / `peer-left`
-- role：`viewer`（Web）| `caster`（Android）。
+详见 `src/desktop/src/shared/protocol.ts` 与 `README.md`「媒体协议」。要点：
 
-**Perfect Negotiation**：viewer 固定 `polite`、caster 固定 `impolite`（网桥 `welcome` 下发）。仅 impolite 端（caster）在 `peer-joined` 时主动 `tryOffer()`，避免 offer 碰撞（glare）。WebRTC 仅用于视频媒体轨道。
-
-**姿态（经信令中继通道，不再走 WebRTC DataChannel）**
-```json
-{ "t": 1694200000000, "q": { "x":0, "y":0, "z":0, "w":1 } }
-```
-`q` 为**设备坐标系**融合四元数（顺序 `[x,y,z,w]`）。Web 端将其应用到 3D 手机模型。
+- **ALPN** `screen-share/1`（Android Rust core ↔ 桌面端）。
+- **视频帧**：每帧一条 uni stream，`flags(1) | ptsUs(8,BE) | length(4,BE) | Annex-B payload`。
+- **控制消息**：bi stream，换行分隔 JSON；`hello` / `sensor`（Android→桌面）、`welcome` /
+  `request-keyframe`（桌面→Android）。
 
 ## 7. 坐标系与姿态对齐（重要）
 
 - Android `MadgwickFusion` 输出**设备坐标系**四元数（ENU 风格，顺序 `[x,y,z,w]`）。
-- Web 端 `DEFAULT_ALIGN = [0.7071, 0, 0, 0.7071]`（约绕 X 轴 +90°，将 ENU 的 Z-Up 映射到 Three 的 Y-Up、屏幕法线到 +Z）。
+- 桌面端 `DEFAULT_ALIGN = [0.7071, 0, 0, 0.7071]`（约绕 X 轴 +90°，将 ENU 的 Z-Up 映射到 Three 的
+  Y-Up、屏幕法线到 +Z），定义在 `renderer/components/ThreeViewer.tsx`。
 - 最终模型姿态：`modelQuat = DEFAULT_ALIGN × base⁻¹ × pose`。
-- Web「校准姿态」将当前设备姿态记录为基线 `base`，可完全吸收坐标系符号/轴序差异；「重置标定」恢复默认。
-- 改动对齐相关逻辑时务必同时考虑 Android 输出帧与 Web `DEFAULT_ALIGN`/`useScreenShare` 的乘法顺序。
+- 「校准姿态」将当前设备姿态记录为基线 `base`，可完全吸收坐标系符号/轴序差异；「重置标定」恢复默认。
+- 改动对齐相关逻辑时务必同时考虑 Android 输出帧与桌面端的乘法顺序。
 
 ## 8. 约定与注意事项（易踩坑）
 
-1. **WebRTC 依赖仓库**：`org.webrtc:google-webrtc` **从未发布到 Maven Central / Google 仓库**，仅发布在已关闭的 JCenter。已在 `build.gradle`/`settings.gradle` 加入阿里云 JCenter 镜像（`https://maven.aliyun.com/repository/public`）。**不要**把该依赖改回 `mavenCentral()`/`google()`，否则无法解析。
-2. **WebRTC `1.0.32006` API 细节**（改动 `webrtc/` 时务必对齐）：
-   - `PeerConnection.Observer` 是**接口**，创建时写 `object : PeerConnection.Observer { ... }`（无构造括号）。
-   - 需实现的抽象方法：`onSignalingChange`、`onIceConnectionChange`、`onIceConnectionReceivingChange(boolean)`、`onIceGatheringChange`、`onIceCandidate`、`onIceCandidatesRemoved(IceCandidate[])`、`onAddStream`、`onRemoveStream`、`onDataChannel`、`onRenegotiationNeeded`、`onAddTrack(RtpReceiver, MediaStream[])`。（`onConnectionChange`、`onStandardizedIceConnectionChange` 等为 default，可不实现。）
-   - `ScreenCapturerAndroid(Intent, MediaProjection.Callback)`：**第二个参数是 `MediaProjection.Callback` 而非 `MediaProjection`**。该版本内部通过 Android 14+ 新 API `MediaProjectionManager.getMediaProjection(callback, data)` 自建 `MediaProjection`，**不要**从外部传入 `MediaProjection` 实例。
-3. **Madgwick β 现已自适应**（不再固定 0.1）：构造函数参数 `betaStatic`（静止，默认 0.2）、`betaMotion`（运动，默认 0.04）、`dynAccelRef`（动态加速度参考幅度，默认 0.3）、`betaSmoothing`（EMA 平滑，默认 0.1）。动态加速度大时 β 自动减小以更信任陀螺仪惯导、抑制动态加速度干扰；静止时 β 增大让重力/地磁参考更快消除漂移。`getBeta()` 可读取当前（平滑后）增益用于遥测。
-4. **类型同步**：`src/app/lib/types.ts`（Web）与 `src/signaling/src/protocol.ts`（信令）的消息类型需保持一致；二者目前是刻意的结构重复（非共享导入），改动协议时两边都要改。
-5. **环境变量**：`.env.example` 已提供示例。`NEXT_PUBLIC_SIGNALING_WS_URL` 供 Web 读；信令服务端读 `PORT`（默认 8080）。`.env` 已被 `.gitignore` 忽略。
-6. **`.gitignore`** 已覆盖 `node_modules/`、`src/mobile/app/build/`、`.gradle/`、`local.properties`、`.env` 等；`jni/*.so` 与 `classes.jar` 为项目预置产物，会被纳入版本控制。
+1. **iroh 版本必须锁定**：Rust `iroh = "=1.1.0"`（见 `iroh-core/Cargo.toml`）对应 Node 侧
+   `@number0/iroh@^1.1.0`。两端 QUIC/ALPN 握手依赖同源版本，升级需同时升。
+2. **控制消息必须带结尾 `\n`**：Rust 读线程与 Node 网桥都按 `\n` 切分；漏掉分隔符会把多条消息粘成
+   一条、永远解析不出来。发送统一走 `IrohMediaTransport.sendJson()`（内部已补 `\n`）。
+3. **媒体不要复用单条 stream**：QUIC 流内严格有序，丢一个包会阻塞后续所有帧。当前是「每帧一条
+   uni stream + 接收端按 pts 重排」，改动这里要同时考虑重排窗口与延迟。
+4. **codec string 以 SPS 为准**：`MediaFormat.createVideoFormat` 的预设 profile 常与 MediaCodec 实际
+   协商结果不同，用预设值 configure `VideoDecoder` 会失败。`decoder.ts` 会从 SPS 解析并自动重建。
+5. **H.264 载荷格式统一 Annex-B**：`MediaCodecEncoder` 逐帧检测起始码，AVCC 自动转换；
+   接收端 `VideoDecoder` 配置为 `avc: { format: "annexb" }`，不需要 `description`(avcC)。
+6. **MediaProjection 授权只能换一次**：`getMediaProjection(resultCode, data)` 需要二者配对。
+   `MainActivity` 保存了 `pendingProjectionResultCode` 并随 Intent 传给 Service；
+   **不要**恢复成"只传 data"的旧写法。Android 14+ 还要求先 `startForeground(mediaProjection)` 再换取，
+   且必须 `registerCallback`。
+7. **iroh 只在 Electron 主进程可用**：渲染进程是 Chromium，`require("@number0/iroh")` 会失败；
+   所有网络操作都在主进程，渲染进程只经 preload 白名单 API 收发。
+8. **不要跑 `pnpm install` 时忘了 `.npmrc`**：electron 的 postinstall 从 github 下载二进制，国内会卡死
+   （表现为 `node install.js` 长时间无输出）。`.npmrc` 已指向 npmmirror；调试用 `$env:DEBUG="@electron/get*"`。
+9. **JNI 回调类不可被混淆**：`IrohCore.onMessage` 由 Rust 通过 `CallStaticVoidMethod` 按类名/方法名调用，
+   `proguard-rules.pro` 已 keep 该类；将来开启 `minifyEnabled` 时不要删掉这条规则。
+10. **iroh 原生库必须本机构建**：`app/src/main/jniLibs/` 已被 `.gitignore` 忽略，clone 后需先用
+    `cargo-ndk` 构建 `libiroh_core.so`（见 `src/mobile/iroh-core/README.md`），否则 App 在
+    `System.loadLibrary` 失败后只会在日志里降级报错、始终连不上接收端。
 
 ## 9. 常见任务指引
 
-- **新增 DataChannel 消息类型**：在 `types.ts`/`protocol.ts` 增加结构 → Android 侧在 `PeerConnectionClient` 发送（参考 `sendSensor`）→ Web 侧在 `useScreenShare`/`store` 接收处理。
-- **改姿态对齐**：调 `src/app/lib/config.ts` 的 `DEFAULT_ALIGN`；必要时同步 `useScreenShare` 的乘序。
-- **加 TURN（视频媒体跨严格 NAT）**：连接/信令层已用 iroh 自动 NAT 穿透（relay 兜底），无需为信令配置 STUN/TURN；但 **WebRTC 视频媒体**仍走其自身 ICE，保留 `config.ts`/`PeerConnectionClient` 中的 STUN，跨对称型 NAT 时再追加 TURN 一项。
+- **改媒体协议**：先改 `src/desktop/src/shared/protocol.ts`，同步 `IrohMediaTransport.kt`（帧头拼装）
+  与 `iroh-core/src/lib.rs`（若有结构变化）→ 桌面端 `main/irohViewer.ts` 解析处一起改。
+- **调画质/码率**：`MediaCodecEncoder.Options`（`bitRate` / `maxLongEdge` / `frameRate` / `iFrameIntervalSec`）。
+- **改姿态对齐**：改 `ThreeViewer.tsx` 里的 `DEFAULT_ALIGN_Q`；必要时同步乘序。
 - **调传感器融合**：改 `sensor/MadgwickFusion.kt`（含自适应 β 参数与梯度下降实现）。
-- **改信令/连接行为**：`src/signaling/src/{irohBridge,server}.ts`（`irohBridge.ts` 维护 iroh 端点与 caster 注册/中继；`server.ts` 维护浏览器侧 WebSocket 与桥接）。Android 侧传输实现见 `src/mobile/.../webrtc/{SignalingTransport,IrohSignalingTransport,WsSignalingTransport,IrohCore}.kt`，iroh 原生核心见 `src/mobile/iroh-core`（Rust）。
+- **改连接/配对行为**：桌面端 `main/irohViewer.ts`（accept、重连顶替策略）+ Android
+  `ScreenCaptureService` 的连接时序；ticket 交付在 `main/index.ts`（二维码）与 `MainActivity.onScanned`。
+- **新增控制消息**：`shared/protocol.ts` 加类型 → Android `IrohMediaTransport.onRawMessage` 或
+  `sendJson` → 桌面端 `main/index.ts` 的 `viewer.on("control")` 分发。
 
 ## 10. 验证
 
-- **Web**：`pnpm --filter screen-share-web run build`（Next.js 构建含类型检查）；`pnpm dev` 起本地服务手动验证页面与 3D 观看端。
-- **信令**：`pnpm --filter screen-share-signaling run dev`（tsx watch 热重载），检查 `ws://localhost:8080` 日志。
-- **Android**：须在 Android Studio 中 `Sync Project with Gradle Files` 后构建；当前无自动化测试。改动 `webrtc/` 或 `sensor/` 后建议真机跑一次共享流程，确认画面 + 3D 姿态同步。
-- 当前仓库**无自动化测试**；变更后应至少保证 Web 类型检查通过与 Android Gradle 同步成功。
+- **桌面端**：`pnpm --filter screen-share-desktop run typecheck`；`pnpm --filter screen-share-desktop run build`
+  （electron-vite 构建 main/preload/renderer 三段）；`pnpm dev:desktop` 手动验证二维码与解码画面。
+- **原生模块 ABI**：`$env:ELECTRON_RUN_AS_NODE=1; & <electron.exe> <脚本>` 可在 Electron 的 Node 运行时下
+  验证 `@number0/iroh` 能否加载并 `Endpoint.builder().bind()`。
+- **Rust core**：`cargo ndk -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 -o ../app/src/main/jniLibs build --release`
+  （或 `build-android.ps1` / `build-android-docker.ps1`）。
+- **Android**：`cd src/mobile && .\gradlew.bat assembleDebug`（或在 Android Studio 中 Sync 后构建）。
+  已配置 **ABI splits**（只出 `arm64-v8a` 与 `x86_64`），产物为
+  `app/build/outputs/apk/debug/app-<abi>-debug.apk`，真机装 arm64 那个；单包约 25 MB。
+  `app/build.gradle` 里用 `packaging.jniLibs.excludes` 排除了 cargo 副产物
+  `libiroh-*.so` / `libiroh_relay-*.so`（core 并未引用它们），**不要**删掉这条规则，否则包体会回到 86 MB。
+  当前仓库**无自动化测试**；改动 `capture/`、`webrtc/` 或 `sensor/` 后建议真机跑一次完整流程，确认画面 + 3D 姿态同步。
+- 变更后应至少保证：桌面端 typecheck/build 通过、Android Gradle 同步成功。

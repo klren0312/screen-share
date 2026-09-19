@@ -38,8 +38,14 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+# 只保留 libiroh_core.so：libiroh-*.so / libiroh_relay-*.so 是同一次 cargo 构建的副产物
+# （iroh / iroh-relay 的 cdylib），core 并未引用它们（NEEDED 仅 libc/libm/libdl），删掉可减小 APK
+Get-ChildItem -Path $out -Recurse -File |
+    Where-Object { $_.Name -like "libiroh-*.so" -or $_.Name -like "libiroh_relay-*.so" } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+
 Write-Host ""
 Write-Host "==> Output: $out"
 Get-ChildItem -Recurse $out -Filter "libiroh_core.so" | ForEach-Object { Write-Host "   $($_.FullName)" }
 Write-Host ""
-Write-Host "Next: set ScreenCaptureService.irohTicket to the bridge ticket, and ensure app build.gradle uses jniLibs (see iroh-core/README.md)."
+Write-Host "Next: 启动桌面端（pnpm dev）后用 App 扫码连接，详见 iroh-core/README.md。"

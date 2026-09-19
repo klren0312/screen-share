@@ -30,10 +30,17 @@ class PostureTracker(
     private var lastT = 0L
 
     fun start() {
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
-        sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_GAME)
+        // 传感器可能不存在（部分设备/模拟器没有磁力计或陀螺仪），registerListener 传 null 会 NPE
+        accelerometer?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+        magnetometer?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
         if (hasGyro) {
-            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_FASTEST)
+            gyroscope?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            }
         }
     }
 

@@ -1,38 +1,48 @@
 # iroh-core（Android 端 iroh 原生核心）
 
-Android 端（caster）通过本 crate 与信令网桥的 **iroh 端点**建立 QUIC 连接，
-由服务端在 iroh 与浏览器 WebSocket 之间中继 SDP/ICE 与 sensor 数据。
+Android 端（caster）通过本 crate 与**桌面端接收端（Electron）**建立 QUIC 连接，
+把编码后的屏幕画面与姿态经 iroh 直连推送过去。媒体不经过 WebRTC，因此不需要
+SDP/ICE 交换，也不需要 STUN/TURN 与信令服务器；两端靠一次扫码（桌面端展示 ticket）配对。
 
-> ⚠️ 本目录 Rust 代码为**参考实现**，需在本机用 `cargo-ndk` 交叉编译验证。
-> iroh 1.x 的具体 API（如 `Endpoint::builder()`、`discovery_n0`、`RelayMode`、
-> `NodeTicket` 解析等）请以你环境安装的版本为准，首次构建可能需做少量 API 适配。
+> ⚠️ 本目录 Rust 代码需在本机用 `cargo-ndk` 交叉编译验证。
+> iroh 1.x 的具体 API 请以你环境安装的版本为准（本仓库锁定 `iroh = "=1.1.0"`，
+> 与桌面端 `@number0/iroh` 同源）。
 
 ## 架构位置
 
 ```
-Android 端 Kotlin                        本 Rust crate (JNI)             信令网桥 (Node iroh 端点)
-IrohSignalingTransport ──JNI──▶ IrohCore ──iroh QUIC──▶  网桥 iroh 端点
-        │                                  ▲
-        └──── IrohCore.onMessage(handle,json) 回调 ──────┘
+Android Kotlin                             本 Rust crate (JNI)              Electron 主进程
+IrohMediaTransport ──JNI──▶ IrohCore ──iroh QUIC──▶  接收端 iroh 端点
+        │                              ▲
+        └──── IrohCore.onMessage(handle,json) 回调 ─────┘
 ```
 
-- Kotlin 侧：`src/mobile/app/.../webrtc/{IrohCore,IrohSignalingTransport,SignalingTransport}.kt`
+- Kotlin 侧：`src/mobile/app/.../webrtc/{IrohCore,IrohMediaTransport}.kt`
 - 原生侧：本目录（`libiroh_core.so`）
 
 ## JNI 契约（Kotlin ↔ Rust）
 
-| Kotlin (`IrohCore.kt`)            | Rust 导出符号                                        | 说明 |
-|----------------------------------|------------------------------------------------------|------|
-| `connect(ticket, room, role)`    | `Java_com_screenshare_webrtc_IrohCore_connect`       | 建立 iroh 连接并发送 `register`，返回句柄（>0 成功，0 失败） |
-| `sendMsg(handle, message)`       | `Java_com_screenshare_webrtc_IrohCore_sendMsg`       | 发送一条 JSON 信令/姿态消息 |
-| `closeConn(handle)`              | `Java_com_screenshare_webrtc_IrohCore_closeConn`     | 关闭连接 |
-| `onMessage(handle, json)` (静态) | 由 Rust 读线程回调（JNI `CallStaticVoidMethod`）     | 把收到的 JSON 转发给对应 transport |
+| Kotlin (`IrohCore.kt`)            | Rust 导出符号                                          | 说明 |
+|-----------------------------------|--------------------------------------------------------|------|
+| `connect(ticket, room, role)`     | `Java_com_screenshare_webrtc_IrohCore_connect`          | 建立 iroh 连接并发送 `register`，返回句柄（>0 成功，0 失败） |
+| `sendMsg(handle, message)`        | `Java_com_screenshare_webrtc_IrohCore_sendMsg`          | 发送一条 JSON 控制消息（**调用方须自带结尾 `\n`**） |
+| `sendMediaFrame(handle, frame)`   | `Java_com_screenshare_webrtc_IrohCore_sendMediaFrame`   | 发送一帧媒体（13B 头 + Annex-B H.264）；非阻塞投递，队满丢帧 |
+| `closeConn(handle)`               | `Java_com_screenshare_webrtc_IrohCore_closeConn`        | 关闭连接 |
+| `onMessage(handle, json)` (静态)  | 由 Rust 读线程回调（JNI `CallStaticVoidMethod`）         | 把收到的 JSON 转发给对应 sink |
 
-**消息协议（换行分隔 JSON）**
-- Android→网桥：`register{room}` / `signal{data}` / `sensor{q,t}` / `leave`
-- 网桥→Android：`welcome{you}` / `peer-joined` / `signal{data}` / `peer-left`
+**发送路径**：控制消息走 bi stream（换行分隔 JSON）；媒体每帧 `open_uni()` 开一条新的单向流，
+写完 `finish()`。**不要**把媒体塞进同一条流——QUIC 流内严格有序，丢包会阻塞后续所有帧。
 
-ALPN 固定为 `screen-share/1`，须与信令网桥 `irohBridge.ts` 中保持一致。
+**帧格式**（唯一定义源：`src/desktop/src/shared/protocol.ts`）：
+
+| 偏移 | 长度 | 字段 |
+|------|------|------|
+| 0 | 1 | `flags`：bit0=CONFIG(SPS/PPS)，bit1=KEYFRAME |
+| 1 | 8 | `ptsUs`（大端） |
+| 9 | 4 | `length`（大端） |
+| 13 | N | Annex-B H.264 载荷 |
+
+ALPN 固定为 `screen-share/1`，须与桌面端 `protocol.ts` 保持一致。
 
 ## 前置依赖
 
@@ -87,9 +97,12 @@ cargo ndk -t arm64-v8a -t armeabi-v7a -t x86 -t x86_64 \
 产物：`src/mobile/app/src/main/jniLibs/<abi>/libiroh_core.so`
 （AGP 默认即从此目录加载 `.so`，无需额外 `sourceSets` 配置。）
 
+> 两个构建脚本在编译后会自动删除同批产出的 `libiroh-*.so` / `libiroh_relay-*.so`：
+> 它们是 iroh / iroh-relay 的 cdylib 副产物，`libiroh_core.so` 并未引用
+> （`llvm-readelf -d` 确认 NEEDED 仅 `libc`/`libm`/`libdl`），留着只会让 APK 无谓变大。
+
 ## 集成到 App
 
 1. 构建并放置 `libiroh_core.so`（见上）。
-2. 在 `ScreenCaptureService.irohTicket` 填入信令网桥启动时打印的 iroh ticket
-   （默认 `IrohSignalingTransport` 会用它连接网桥 iroh 端点）。
-3. 不设置 `irohTicket` 时 App 仍走默认 `WsSignalingTransport`（WebSocket），行为不变。
+2. 打开桌面端，用 App 内「扫码连接」扫描其二维码，`ScreenCaptureService.irohTicket` 会被填入。
+3. 点「开始共享」并授权屏幕捕获，媒体与姿态即经 iroh 直连推送。

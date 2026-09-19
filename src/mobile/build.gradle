@@ -18,7 +18,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        // org.webrtc:google-webrtc 只发布在已关闭的 JCenter，需用其镜像才能解析
         maven { url 'https://maven.aliyun.com/repository/public' }
     }
 }

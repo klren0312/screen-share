@@ -3,8 +3,6 @@ pluginManagement {
         google()
         mavenCentral()
         gradlePluginPortal()
-        // JCenter 镜像，用于解析 org.webrtc:google-webrtc 等已停服仓库的构件
-        maven { url 'https://maven.aliyun.com/repository/public' }
     }
 }
 

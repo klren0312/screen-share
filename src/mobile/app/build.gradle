@@ -32,6 +32,27 @@ android {
     buildFeatures {
         viewBinding true
     }
+
+    // 只产出真机(arm64-v8a)与模拟器(x86_64)的包。
+    // 4 个 ABI 全打时单包 ~86MB，其中绝大部分是原生库；armeabi-v7a / x86 已无实际设备需要。
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'x86_64'
+            universalApk false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // cargo ndk 会把 iroh / iroh-relay 的 cdylib 一并复制到 jniLibs，
+            // 但 libiroh_core.so 并未引用它们（llvm-readelf -d 验证过：
+            // NEEDED 只有 libc/libm/libdl，iroh 是静态链进 core 的）。
+            // 排除后每个 ABI 少 ~3MB。
+            excludes += ['**/libiroh-*.so', '**/libiroh_relay-*.so']
+        }
+    }
 }
 
 dependencies {
@@ -39,10 +60,9 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
-    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-    implementation 'org.webrtc:google-webrtc:1.0.32006'
-    // 扫码连接（扫描 Web 端 iroh ticket 二维码）
+    // 媒体采集/编码走 Android 原生 MediaCodec，连接走 iroh（Rust core + JNI），
+    // 不再依赖 WebRTC AAR。
+    // 扫码连接（扫描桌面端展示的 iroh ticket 二维码）
     implementation 'androidx.activity:activity-ktx:1.9.3'
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
 }

@@ -17,7 +17,7 @@ use iroh::endpoint::presets;
 use iroh::endpoint::{Connection, SendStream};
 use iroh::{Endpoint, EndpointAddr};
 use iroh_tickets::endpoint::EndpointTicket;
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{jlong, JNI_VERSION_1_8};
 use jni::JNIEnv;
 use jni::JavaVM;
@@ -38,11 +38,16 @@ static JVM: OnceCell<JavaVM> = OnceCell::new();
 /// 连接句柄计数器
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-/// 一条活跃连接：保留 Connection（防止被 drop 而关闭）、发送流、以及对端地址
+/// 一条活跃连接：保留 Connection（防止被 drop 而关闭）、控制流、媒体发送队列
 struct Conn {
+    /// 仅用于保活：持有 Connection，防止所有句柄被 drop 后连接自动关闭。
+    /// 实际的收发都走 clone 出去的句柄（控制流用 send，媒体用 writer 任务）。
     #[allow(dead_code)]
     conn: Connection,
+    /// 控制消息（换行分隔 JSON）发送流
     send: Arc<AsyncMutex<SendStream>>,
+    /// 媒体帧队列：投递非阻塞，队满丢帧（实时视频宁可丢帧也不阻塞采集线程）
+    media_tx: mpsc::Sender<Vec<u8>>,
     /// 用于通知读任务退出
     close_tx: mpsc::Sender<()>,
 }
@@ -132,6 +137,23 @@ async fn connect_async(ticket: String, room: String) -> anyhow::Result<(u64, ())
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
     let send = Arc::new(AsyncMutex::new(send));
 
+    // 媒体发送任务：每帧开一条 uni stream。
+    // 不复用同一条流的原因：QUIC 流内严格有序，丢一个包会阻塞后续所有帧（HOL 阻塞），
+    // 实时视频宁可让 QUIC 在流间各自重传，由接收端按 pts 重排。
+    let (media_tx, mut media_rx) = mpsc::channel::<Vec<u8>>(64);
+    let media_conn = conn.clone();
+    tokio::spawn(async move {
+        while let Some(frame) = media_rx.recv().await {
+            let Ok(mut uni) = media_conn.open_uni().await else {
+                break;
+            };
+            if uni.write_all(&frame).await.is_err() {
+                break;
+            }
+            let _ = uni.finish();
+        }
+    });
+
     // 退出信号
     let (close_tx, mut close_rx) = mpsc::channel::<()>(1);
     conns().lock().unwrap().insert(
@@ -139,6 +161,7 @@ async fn connect_async(ticket: String, room: String) -> anyhow::Result<(u64, ())
         Conn {
             conn,
             send: send.clone(),
+            media_tx,
             close_tx: close_tx.clone(),
         },
     );
@@ -225,6 +248,32 @@ pub extern "system" fn Java_com_screenshare_webrtc_IrohCore_sendMsg(
             let _ = s.flush().await;
         }
     });
+}
+
+/// `IrohCore.sendMediaFrame(handle, frame)`
+///
+/// frame 是已编码的完整一帧：13 字节头（flags|ptsUs|length，见 Desktop 端
+/// shared/protocol.ts）+ Annex-B H.264 载荷。
+/// 这里只做非阻塞投递，真正的 QUIC 写入在后台任务里；队列满则丢帧，
+/// 绝不阻塞 Android 的采集/编码线程。
+#[no_mangle]
+pub extern "system" fn Java_com_screenshare_webrtc_IrohCore_sendMediaFrame(
+    env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    frame: JByteArray,
+) {
+    let bytes = match env.convert_byte_array(&frame) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let tx = {
+        let guard = conns().lock().unwrap();
+        guard.get(&(handle as u64)).map(|c| c.media_tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.try_send(bytes);
+    }
 }
 
 /// `IrohCore.closeConn(handle)`

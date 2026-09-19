@@ -14,18 +14,10 @@
         android:layout_marginBottom="24dp" />
 
     <EditText
-        android:id="@+id/serverInput"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="信令服务器 ws://host:8080"
-        android:inputType="textUri"
-        android:layout_marginBottom="12dp" />
-
-    <EditText
         android:id="@+id/roomInput"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="房间号 (如 DEMO01)"
+        android:hint="房间名（仅用于日志标识）"
         android:inputType="text"
         android:layout_marginBottom="24dp" />
 
@@ -42,11 +34,18 @@
         android:layout_marginTop="8dp"
         android:text="扫码连接" />
 
+    <Button
+        android:id="@+id/logBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="查看日志" />
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:text="扫码：扫描 Web 端二维码，自动获取 iroh ticket 与房间号"
+        android:text="扫码：扫描桌面端二维码，经 iroh 直连（自动 NAT 穿透，无需服务器）"
         android:textSize="12sp"
         android:textColor="#888888" />
 
